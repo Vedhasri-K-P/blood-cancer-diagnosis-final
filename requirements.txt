@@ -4,3 +4,6 @@ tensorflow-cpu
 numpy
 opencv-python-headless
 Pillow
+flask-cors
+matplotlib
+scikit-learn
