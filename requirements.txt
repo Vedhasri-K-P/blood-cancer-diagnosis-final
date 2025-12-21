@@ -7,3 +7,4 @@ Pillow
 flask-cors
 matplotlib
 scikit-learn
+PyJWT
