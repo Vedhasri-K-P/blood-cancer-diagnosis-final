@@ -1,0 +1,23 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* This is the fix.
+  It ensures that the html, body, and your React app's root 
+  div all take up 100% of the available height. 
+  This provides a stable "container" for your App.jsx's 
+  flex-col and min-h-screen layout to work correctly.
+*/
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: 'Poppins', sans-serif;
+  /* The background-color in App.jsx (bg-gray-50) will 
+    override this, but it's good to have a fallback. 
+  */
+  background-color: #f6f9fc;
+}
