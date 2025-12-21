@@ -1,5 +1,5 @@
 # ---------------------- #
-# app.py (Static File Serving Fix - v3 - WITH FINAL PRINT DEBUG)
+# app.py (Final CORS & Route Fix - v4)
 # ---------------------- #
 
 import os
@@ -66,13 +66,20 @@ if not os.path.exists(REPORTS_FILE):
 
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
-CORS(app) 
+
+# --- CRITICAL FIX: Allow All Origins for CORS ---
+# This ensures Vercel can talk to Render without being blocked.
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 @app.after_request
 def add_cors_headers(resp):
-    origin = request.headers.get("Origin", "*"); resp.headers["Access-Control-Allow-Origin"] = origin
-    resp.headers["Access-Control-Allow-Credentials"] = "true"; resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"; resp.headers["Access-Control-Expose-Headers"] = "Content-Type, Authorization"
+    # Redundant backup, just in case
+    origin = request.headers.get("Origin", "*")
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Credentials"] = "true"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    resp.headers["Access-Control-Expose-Headers"] = "Content-Type, Authorization"
     return resp
 
 # --- Helpers ---
@@ -133,7 +140,7 @@ def serve_output_file(filename):
     except Exception as e: print(f"Error serving {filename}: {e}"); return jsonify({"error": "Server error serving file"}), 500
 
 # --- AUTH ROUTES ---
-@app.route("/api/signup", methods=["POST"])
+@app.route("/signup", methods=["POST"])
 def signup():
     data=request.get_json(silent=True) or {}; name=data.get("name","").strip(); email=data.get("email","").strip().lower(); password=data.get("password")
     if not name or not email or not password: return jsonify({"error":"Name, email, password required"}), 400
@@ -148,7 +155,7 @@ def signup():
         return jsonify({"message":"User created","user":user_safe,"token":token}), 201
     except Exception as e: print(f"Signup Error:{e}"); return jsonify({"error":"Failed to create user"}), 500
 
-@app.route("/api/login", methods=["POST"])
+@app.route("/login", methods=["POST"])
 def login():
     data=request.get_json(silent=True) or {}; email=data.get("email","").strip().lower(); password=data.get("password","")
     if not email or not password: return jsonify({"error":"Email/password required"}), 400
@@ -161,12 +168,12 @@ def login():
     except Exception as e: print(f"Login Error:{e}"); return jsonify({"error":"Login failed"}), 500
 
 # ----------------------
-# CLASSIFY ROUTE (Added FINAL Print Debug)
+# CLASSIFY ROUTE
 # ----------------------
-@app.route("/api/classify", methods=["POST"])
+@app.route("/classify", methods=["POST"])
 @token_required
 def classify_route():
-    print("\n--- app.py: Received POST /api/classify ---") 
+    print("\n--- app.py: Received POST /classify ---") 
     if "file" not in request.files: print("--- app.py: Error - No file part ---"); return jsonify({"error": "No file part"}), 400
     file = request.files["file"]
     if not file or file.filename == "": print("--- app.py: Error - No selected file ---"); return jsonify({"error": "No selected file"}), 400
@@ -259,15 +266,12 @@ def classify_route():
             "report_id": report_id 
         }
         
-        # --- >>> ADD THIS DEBUG PRINT <<< ---
-        # Use json.dumps for clean multiline printing
         print(f"--- app.py: Final JSON response being sent:\n{json.dumps(response_json, indent=2)} ---") 
-        # --- >>> END OF DEBUG PRINT <<< ---
 
         return jsonify(response_json), 200
         
     except Exception as e:
-        print(f"--- app.py: !!! UNEXPECTED GLOBAL ERROR /api/classify !!! ---"); print(f"    Error: {e}"); traceback.print_exc() 
+        print(f"--- app.py: !!! UNEXPECTED GLOBAL ERROR /classify !!! ---"); print(f"    Error: {e}"); traceback.print_exc() 
         if os.path.exists(upload_path):
              try: os.remove(upload_path) 
              except Exception as del_e: print(f"    Failed cleanup: {del_e}")
@@ -276,7 +280,7 @@ def classify_route():
 # ----------------------
 # Other endpoints (Unchanged)
 # ----------------------
-@app.route("/api/reports", methods=["GET"])
+@app.route("/reports", methods=["GET"])
 @token_required
 def get_reports():
     token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email")
@@ -299,7 +303,7 @@ def get_reports():
 @app.route("/ping", methods=["GET"])
 def ping(): return jsonify({"message": "pong - Service running"}), 200
 
-@app.route("/api/profile", methods=["GET"])
+@app.route("/profile", methods=["GET"])
 @token_required
 def get_profile_route():
     token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email") 
@@ -311,7 +315,7 @@ def get_profile_route():
     profile["is_admin"] = user.get("is_admin", False) 
     return jsonify(profile), 200
 
-@app.route("/api/profile", methods=["PUT"])
+@app.route("/profile", methods=["PUT"])
 @token_required
 def update_profile_route():
     token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email")
@@ -343,4 +347,3 @@ if __name__ == "__main__":
     print(f"--- Starting Flask Server ---"); print(f"Host: {host}"); print(f"Port: {port}"); print(f"Debug: {debug_mode}")
     print(f"Static Folder: {app.static_folder}"); print(f"Outputs Base: {OUTPUTS_BASE_FOLDER}"); print(f"-----------------------------")
     app.run(host=host, port=port, debug=debug_mode)
-
