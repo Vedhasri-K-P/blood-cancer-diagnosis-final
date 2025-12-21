@@ -8,7 +8,7 @@ export default function Reports() {
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    axios.get("http://smart-diagnostic-tool.onrender.com/api/reports", {
+    axios.get("https://smart-diagnostic-tool.onrender.com/api/reports", {
       headers: token ? { Authorization: `Bearer ${token}` } : {}
     })
     .then((res) => { setReports(res.data || []); })
