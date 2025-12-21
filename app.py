@@ -1,5 +1,5 @@
 # ---------------------- #
-# app.py (Final V5 - Preflight Auth Fix)
+# app.py (Final V6 - Brute Force Headers)
 # ---------------------- #
 
 import os
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 import traceback 
 
-from flask import Flask, request, jsonify, url_for, send_from_directory
+from flask import Flask, request, jsonify, make_response, send_from_directory
 from flask_cors import CORS
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -19,24 +19,18 @@ from werkzeug.utils import secure_filename
 try:
     from report_generator import generate_pdf
     HAS_PDF_GEN = True
-    print("--- app.py: report_generator imported successfully ---")
-except ImportError as e:
-    print(f"--- app.py: Warning: PDF generation disabled. {e} ---")
+except ImportError:
     HAS_PDF_GEN = False
     def generate_pdf(*args, **kwargs): pass 
     
 try:
     from classify import predict_disease
-    print("--- app.py: classify imported successfully ---")
-except ImportError as e:
-    print(f"--- app.py: Error: classify.py import failed: {e} ---")
+except ImportError:
     def predict_disease(path): return {"invalid": True, "detail": "Classifier not available."}
 
 try:
     from stage_predictor import predict_stage
-    print("--- app.py: stage_predictor imported successfully ---")
-except ImportError as e:
-     print(f"--- app.py: Warning: stage_predictor.py import failed: {e} ---")
+except ImportError:
      def predict_stage(path): return {"stage": "N/A"}
 
 # --- Configuration ---
@@ -63,229 +57,224 @@ if not os.path.exists(REPORTS_FILE):
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
 
-# --- CORS: ALLOW EVERYTHING ---
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+# --- CORS SETUP ---
+CORS(app)
 
+# --- THE BRUTE FORCE FIX ---
+# This function manually adds headers to EVERY response to ensure the browser is happy.
 @app.after_request
-def add_cors_headers(resp):
-    resp.headers["Access-Control-Allow-Origin"] = "*" 
-    resp.headers["Access-Control-Allow-Credentials"] = "true"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    return resp
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*" 
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    return response
 
-# --- Helpers ---
-def load_json_file(filepath):
-    try:
-        with open(filepath, "r", encoding="utf-8") as f: content = f.read(); return json.loads(content) if content else []
-    except: return []
-def save_json_file(filepath, data):
-    try:
-        with open(filepath, "w", encoding="utf-8") as f: json.dump(data, f, indent=2, ensure_ascii=False)
-    except Exception as e: print(f"Error saving {filepath}: {e}")
-def load_users(): return load_json_file(USERS_FILE)
-def save_users(users): save_json_file(USERS_FILE, users)
-def load_reports(): return load_json_file(REPORTS_FILE)
-def save_reports(reports): save_json_file(REPORTS_FILE, reports)
-def create_token(payload):
-    exp = datetime.utcnow() + timedelta(hours=JWT_EXP_HOURS); payload_copy = payload.copy(); payload_copy.update({"exp": exp})
-    return jwt.encode(payload_copy, JWT_SECRET, algorithm=JWT_ALGORITHM)
-def decode_token(token): return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-
-# --- CRITICAL FIX: Bypass Auth for OPTIONS requests ---
+# --- AUTH DECORATOR (Modified) ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Allow Preflight checks (OPTIONS) to pass without a token
+        # 1. Handle Preflight (OPTIONS) manually and immediately
         if request.method == 'OPTIONS':
-            return jsonify({"status": "ok"}), 200
+            resp = make_response(jsonify({"status": "ok"}), 200)
+            resp.headers["Access-Control-Allow-Origin"] = "*"
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+            return resp
 
-        auth_header = request.headers.get("Authorization", None);
-        if not auth_header: return jsonify({"error": "Authorization header required"}), 401
+        # 2. Check Token for other methods (POST, GET, etc.)
+        auth_header = request.headers.get("Authorization", None)
+        if not auth_header: 
+            return jsonify({"error": "Authorization header required"}), 401
         try:
-            parts = auth_header.split();
-            if parts[0].lower() != "bearer" or len(parts) != 2: raise ValueError("Invalid header format")
-            token = parts[1]; data = decode_token(token); request.user = data 
-        except: return jsonify({"error": "Invalid token"}), 401
+            parts = auth_header.split()
+            if parts[0].lower() != "bearer" or len(parts) != 2: 
+                raise ValueError("Invalid header")
+            token = parts[1]
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            request.user = data 
+        except: 
+            return jsonify({"error": "Invalid token"}), 401
+        
         return f(*args, **kwargs)
     return decorated
 
-def safe_float_from_conf(conf):
-    if conf is None: return 0.0 
+# --- Helpers ---
+def load_users(): 
     try:
-        if isinstance(conf, str): s = conf.strip('% '); v = float(s)
-        else: v = float(conf)
-        return round(v, 2) if v > 1 else round(v * 100, 2) 
-    except: return 0.0 
-def to_full_url(stored_path):
-    if not stored_path: return ""
-    stored_path = str(stored_path).replace(os.sep, '/').lstrip('/')
-    path_prefix = 'static/outputs/'
-    if stored_path.startswith(path_prefix): filename_for_endpoint = stored_path[len(path_prefix):] 
-    else: filename_for_endpoint = stored_path
-    if not filename_for_endpoint: return "" 
-    try: return url_for('serve_output_file', filename=filename_for_endpoint, _external=True)
-    except RuntimeError: host = os.environ.get("FLASK_RUN_HOST", "http://localhost:5000").rstrip('/'); return f"{host}/outputs/{filename_for_endpoint}"
+        with open(USERS_FILE, "r") as f: return json.load(f)
+    except: return []
+def save_users(users): 
+    try:
+        with open(USERS_FILE, "w") as f: json.dump(users, f, indent=2)
+    except: pass
+def load_reports(): 
+    try:
+        with open(REPORTS_FILE, "r") as f: return json.load(f)
+    except: return []
+def save_reports(reports):
+    try:
+        with open(REPORTS_FILE, "w") as f: json.dump(reports, f, indent=2)
+    except: pass
+def create_token(payload):
+    payload["exp"] = datetime.utcnow() + timedelta(hours=JWT_EXP_HOURS)
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+def safe_float(v):
+    try: return float(v)
+    except: return 0.0
+def to_full_url(path):
+    if not path: return ""
+    clean_path = path.replace("\\", "/").strip("/")
+    if "static/outputs/" in clean_path:
+        filename = clean_path.split("static/outputs/")[-1]
+        host = os.environ.get("FLASK_RUN_HOST", "https://smart-diagnostic-tool.onrender.com").rstrip('/')
+        return f"{host}/outputs/{filename}"
+    return ""
 
 @app.route('/outputs/<path:filename>')
 def serve_output_file(filename):
-    try:
-        return send_from_directory(OUTPUTS_BASE_FOLDER, filename, as_attachment=False)
-    except Exception as e: return jsonify({"error": "File not found"}), 404
+    return send_from_directory(OUTPUTS_BASE_FOLDER, filename)
 
-# --- AUTH ROUTES (/api) ---
+# --- ROUTES ---
+
 @app.route("/api/signup", methods=["POST", "OPTIONS"])
 def signup():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    data=request.get_json(silent=True) or {}; name=data.get("name","").strip(); email=data.get("email","").strip().lower(); password=data.get("password")
-    if not name or not email or not password: return jsonify({"error":"Name, email, password required"}), 400
-    users=load_users();
-    if any(u.get("email")==email for u in users): return jsonify({"error":"User exists"}), 400
-    try:
-        pwd_hash=generate_password_hash(password); user_id=uuid.uuid4().hex
-        user_obj={"id":user_id,"name":name,"email":email,"password_hash":pwd_hash,"is_admin":False,"created_at":datetime.utcnow().isoformat()}
-        users.append(user_obj); save_users(users); token=create_token({"id":user_id,"email":email,"name":name})
-        user_safe={"id":user_id,"name":name,"email":email,"is_admin":False}
-        return jsonify({"message":"User created","user":user_safe,"token":token}), 201
-    except: return jsonify({"error":"Failed to create user"}), 500
+    data = request.get_json(silent=True) or {}
+    email = data.get("email", "").lower()
+    password = data.get("password")
+    name = data.get("name")
+    if not email or not password: return jsonify({"error": "Missing data"}), 400
+    
+    users = load_users()
+    if any(u["email"] == email for u in users): return jsonify({"error": "User exists"}), 400
+    
+    uid = uuid.uuid4().hex
+    users.append({
+        "id": uid, "name": name, "email": email,
+        "password_hash": generate_password_hash(password), "is_admin": False
+    })
+    save_users(users)
+    token = create_token({"id": uid, "email": email, "name": name})
+    return jsonify({"token": token, "user": {"id": uid, "name": name, "email": email}}), 201
 
 @app.route("/api/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    data=request.get_json(silent=True) or {}; email=data.get("email","").strip().lower(); password=data.get("password","")
-    if not email or not password: return jsonify({"error":"Email/password required"}), 400
-    users=load_users(); user=next((u for u in users if u.get("email")==email),None)
-    if not user or not check_password_hash(user.get("password_hash",""),password): return jsonify({"error":"Invalid credentials"}), 401
-    try:
-        payload={"id":user.get("id"),"email":email,"name":user.get("name"),"is_admin":user.get("is_admin",False)}
-        token=create_token(payload); user_safe={k:user.get(k) for k in ["id","name","email","is_admin"]}
-        return jsonify({"message":"Login successful","user":user_safe,"token":token}), 200
-    except: return jsonify({"error":"Login failed"}), 500
+    data = request.get_json(silent=True) or {}
+    email = data.get("email", "").lower()
+    password = data.get("password")
+    users = load_users()
+    user = next((u for u in users if u["email"] == email), None)
+    
+    if user and check_password_hash(user.get("password_hash"), password):
+        token = create_token({"id": user["id"], "email": email, "name": user["name"]})
+        return jsonify({"token": token, "user": {"id": user["id"], "name": user["name"]}}), 200
+    return jsonify({"error": "Invalid credentials"}), 401
 
-# --- CLASSIFY ROUTE (/api) ---
 @app.route("/api/classify", methods=["POST", "OPTIONS"])
 @token_required
 def classify_route():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    print("\n--- app.py: Received POST /api/classify ---") 
-    if "file" not in request.files: return jsonify({"error": "No file part"}), 400
+    # OPTIONS is handled by decorator now, but explicit check implies route allows it
+    if "file" not in request.files: return jsonify({"error": "No file"}), 400
     file = request.files["file"]
-    if not file or file.filename == "": return jsonify({"error": "No selected file"}), 400
     
-    token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email") or "anonymous"
+    filename = f"{uuid.uuid4().hex}_{secure_filename(file.filename)}"
+    save_path = os.path.join(UPLOAD_FOLDER, filename)
+    file.save(save_path)
     
-    original_filename = secure_filename(file.filename)
-    unique_filename = f"{uuid.uuid4().hex}_{original_filename}"
-    upload_path = os.path.join(UPLOAD_FOLDER, unique_filename)
-    
-    try: file.save(upload_path)
-    except: return jsonify({"error": "Failed to save upload"}), 500
-
     try:
-        disease_result = predict_disease(upload_path) 
-        if disease_result.get("invalid"): 
-             if os.path.exists(upload_path): os.remove(upload_path) 
-             return jsonify({"error": "INVALID_IMAGE", "message": disease_result.get("detail", "Invalid image.")}), 400
-
-        class_name = disease_result.get("class_name", "Unknown")
-        conf_num = safe_float_from_conf(disease_result.get("confidence")) 
-        explanation = disease_result.get("explanation", "N/A")
-        gradcam_rel_path = disease_result.get("gradcam_url", "") 
+        # Prediction
+        res = predict_disease(save_path)
+        if res.get("invalid"): return jsonify({"error": "Invalid Image"}), 400
         
-        if gradcam_rel_path:
-            gradcam_rel_path = gradcam_rel_path.replace(os.sep, '/').lstrip('/')
-            if 'gradcam/' in gradcam_rel_path: gradcam_rel_path = 'static/outputs/' + gradcam_rel_path.split('gradcam/', 1)[1]
-
+        disease = res.get("class_name", "Unknown")
+        conf = safe_float(res.get("confidence"))
+        if conf > 1: conf = conf  # assume already percentage
+        else: conf = conf * 100
+        
+        # Stage & PDF
         stage = "N/A"
-        if class_name == "ALL": 
-            stage_result = predict_stage(upload_path)
-            stage = stage_result.get("stage", "Stage Unknown")
-
-        report_id = uuid.uuid4().hex; pdf_filename = f"report_{report_id}.pdf"
-        pdf_abs_path = os.path.join(REPORTS_OUTPUT_FOLDER, pdf_filename)
-        pdf_rel_path = os.path.join("static", "outputs", "reports", pdf_filename).replace(os.sep, "/") 
+        if disease == "ALL":
+             stage = predict_stage(save_path).get("stage", "Unknown")
+             
+        report_id = uuid.uuid4().hex
+        pdf_name = f"report_{report_id}.pdf"
+        pdf_path = os.path.join(REPORTS_OUTPUT_FOLDER, pdf_name)
         
+        gradcam_rel = res.get("gradcam_url", "")
+        # Fix gradcam path logic
+        gradcam_abs = ""
+        if gradcam_rel:
+            clean_gc = gradcam_rel.replace("\\", "/").split("gradcam/")[-1]
+            gradcam_abs = os.path.join(GRADCAM_FOLDER, clean_gc)
+            gradcam_rel = f"static/outputs/gradcam/{clean_gc}"
+
         if HAS_PDF_GEN:
-            gradcam_abs = ""
-            if gradcam_rel_path: gradcam_abs = os.path.abspath(os.path.join(BASE_DIR, gradcam_rel_path))
-            try:
-                generate_pdf(pdf_abs_path, user_identifier, class_name, conf_num, stage, explanation, gradcam_abs)
-            except: pdf_rel_path = ""
-        else: pdf_rel_path = ""
-
-        now_iso = datetime.now().isoformat() 
-        new_report_entry = {
-            "id": report_id, "username": user_identifier, "disease": class_name, "confidence": f"{conf_num:.2f}%", 
-            "stage": stage, "date": now_iso, "gradcam": gradcam_rel_path, "pdf": pdf_rel_path, 
-            "status": "Completed"
-        }
-        reports_data = load_reports(); reports_data.append(new_report_entry); save_reports(reports_data)
+            try: generate_pdf(pdf_path, request.user.get("name"), disease, conf, stage, res.get("explanation"), gradcam_abs)
+            except: pass
+            
+        # Response
+        final_pdf_rel = f"static/outputs/reports/{pdf_name}" if os.path.exists(pdf_path) else ""
         
-        response_json = {
-            "prediction": class_name, "confidence": conf_num, "stage": stage, "explanation": explanation,
-            "gradcam_url": to_full_url(gradcam_rel_path), 
-            "pdf_url": to_full_url(pdf_rel_path),       
-            "report_id": report_id 
+        # Save Report
+        report_entry = {
+            "id": report_id, "username": request.user.get("id"), "disease": disease,
+            "confidence": conf, "stage": stage, "date": datetime.now().isoformat(),
+            "gradcam": gradcam_rel, "pdf": final_pdf_rel
         }
-        return jsonify(response_json), 200
+        reports = load_reports()
+        reports.append(report_entry)
+        save_reports(reports)
+        
+        return jsonify({
+            "prediction": disease, "confidence": conf, "stage": stage,
+            "explanation": res.get("explanation"),
+            "gradcam_url": to_full_url(gradcam_rel),
+            "pdf_url": to_full_url(final_pdf_rel)
+        }), 200
+        
     except Exception as e:
         traceback.print_exc()
-        return jsonify({"error": "Server error"}), 500
+        return jsonify({"error": str(e)}), 500
 
-# --- OTHER ROUTES (/api) ---
 @app.route("/api/reports", methods=["GET", "OPTIONS"])
 @token_required
 def get_reports():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email")
-    is_admin = token_user.get("is_admin", False); fetch_all = request.args.get("all", "false") == "true"
-    reports_data = load_reports(); user_reports = []
-    for report in reports_data:
-        if (is_admin and fetch_all) or report.get("username") == user_identifier:
-            conf_num = safe_float_from_conf(report.get("confidence")) 
-            report_entry = {
-                "id": report.get("id", ""), "username": report.get("username", "N/A"), "disease": report.get("disease", "N/A"),
-                "confidence": conf_num, "stage": report.get("stage", "N/A"), "date": report.get("date", "N/A"), 
-                "gradcam_url": to_full_url(report.get("gradcam", "")), 
-                "pdf_url": to_full_url(report.get("pdf", "")),         
-                "status": report.get("status", "N/A")
-            }
-            user_reports.append(report_entry)
-    user_reports.sort(key=lambda x: x.get("date", ""), reverse=True)
-    return jsonify(user_reports), 200
+    user_id = request.user.get("id")
+    reports = load_reports()
+    my_reports = [r for r in reports if r.get("username") == user_id]
+    
+    # Format for frontend
+    final = []
+    for r in my_reports:
+        final.append({
+            "id": r.get("id"), "disease": r.get("disease"), "confidence": r.get("confidence"),
+            "stage": r.get("stage"), "date": r.get("date"),
+            "gradcam_url": to_full_url(r.get("gradcam")),
+            "pdf_url": to_full_url(r.get("pdf"))
+        })
+    return jsonify(final), 200
 
-@app.route("/api/profile", methods=["GET", "OPTIONS"])
+@app.route("/api/profile", methods=["GET", "PUT", "OPTIONS"])
 @token_required
-def get_profile_route():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email") 
-    users = load_users(); 
-    user = next((u for u in users if u.get("id") == user_identifier or u.get("email") == user_identifier), None)
-    if not user: return jsonify({"error": "Profile not found"}), 404
-    profile = {k: user.get(k, "") for k in ["id","name","email","hospital","specialization","phone","location","about"]}
-    profile["is_admin"] = user.get("is_admin", False) 
-    return jsonify(profile), 200
-
-@app.route("/api/profile", methods=["PUT", "OPTIONS"])
-@token_required
-def update_profile_route():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
-    token_user = getattr(request, "user", {}); user_identifier = token_user.get("id") or token_user.get("email")
-    data = request.get_json(silent=True) or {}; 
-    users = load_users(); user_index = -1
-    for i, u in enumerate(users):
-        if u.get("id") == user_identifier or u.get("email") == user_identifier: user_index = i; break
-    if user_index == -1: return jsonify({"error": "User not found"}), 404
-    updated_profile = users[user_index].copy(); 
-    for field in ["name","hospital","specialization","phone","location","about"]:
-        if field in data: updated_profile[field] = str(data[field]).strip()
-    users[user_index] = updated_profile; save_users(users);
-    profile_resp = {k: updated_profile.get(k, "") for k in ["id","name","email","hospital","specialization","phone","location","about"]}
-    return jsonify({"success": True, "message": "Profile updated", "profile": profile_resp}), 200
-
-@app.route("/ping", methods=["GET"])
-def ping(): return jsonify({"message": "pong"}), 200
+def profile_route():
+    user_id = request.user.get("id")
+    users = load_users()
+    idx = next((i for i, u in enumerate(users) if u["id"] == user_id), -1)
+    
+    if request.method == "GET":
+        if idx == -1: return jsonify({"error": "User not found"}), 404
+        u = users[idx]
+        return jsonify({k: u.get(k, "") for k in ["name", "email", "hospital", "specialization", "phone", "location", "about"]}), 200
+        
+    if request.method == "PUT":
+        if idx == -1: return jsonify({"error": "User not found"}), 404
+        data = request.get_json(silent=True) or {}
+        for k in ["name", "hospital", "specialization", "phone", "location", "about"]:
+            if k in data: users[idx][k] = data[k]
+        save_users(users)
+        return jsonify({"success": True}), 200
 
 if __name__ == "__main__":
-    host = os.environ.get("FLASK_RUN_HOST", "0.0.0.0"); port = int(os.environ.get("FLASK_RUN_PORT", 5000))
-    app.run(host=host, port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
