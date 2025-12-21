@@ -15,7 +15,7 @@ function Signup() {
     const password = e.target.password.value;
 
     try {
-      const res = await axios.post("http://localhost:5000/api/signup", { name, email, password });
+      const res = await axios.post("http://smart-diagnostic-tool.onrender.com/api/signup", { name, email, password });
       const data = res.data;
 
       if (data.token) {

@@ -59,7 +59,7 @@ const Dashboard = () => {
       }
 
       // Send request to backend with Authorization header
-      const res = await axios.post("http://localhost:5000/api/classify", formData, {
+      const res = await axios.post("http://smart-diagnostic-tool.onrender.com/api/classify", formData, {
         headers: { 
           "Content-Type": "multipart/form-data",
           "Authorization": `Bearer ${token}` // Add JWT token

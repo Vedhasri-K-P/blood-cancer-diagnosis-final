@@ -14,7 +14,7 @@ function Login() {
     const password = e.target.password.value;
 
     try {
-      const res = await axios.post("http://localhost:5000/api/login", { email, password });
+      const res = await axios.post("http://smart-diagnostic-tool.onrender.com/api/login", { email, password });
       const data = res.data;
 
       // Save token and user to localStorage
