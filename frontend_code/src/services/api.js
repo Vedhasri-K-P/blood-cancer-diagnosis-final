@@ -25,6 +25,7 @@ api.interceptors.request.use((config) => {
 export const signup = (userData) => api.post('/signup', userData);
 export const login = (userData) => api.post('/login', userData);
 export const getProfile = () => api.get('/profile');
+export const saveProfile = updateProfile;
 export const updateProfile = (data) => api.put('/profile', data);
 export const classifyImage = (formData) => api.post('/classify', formData, {
   headers: { 'Content-Type': 'multipart/form-data' }
