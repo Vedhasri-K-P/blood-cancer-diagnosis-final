@@ -1,12 +1,13 @@
 // src/pages/Profile.jsx
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getProfile, saveProfile } from "../services/api";
+// FIX: Changed saveProfile to updateProfile to match api.js
+import { getProfile, updateProfile } from "../services/api";
 import { toast } from "react-toastify";
 
 /**
  * Profile page
- * - Uses existing getProfile() and saveProfile() from services/api
+ * - Uses existing getProfile() and updateProfile() from services/api
  * - Shows inline messages (err/ok) and also toast notifications
  * - Does NOT change your auth / routing / backend flow
  */
@@ -42,7 +43,11 @@ export default function Profile() {
     setLoading(true);
 
     getProfile()
-      .then((data) => {
+      .then((res) => {
+        // Axios response.data is where the data usually lives
+        // Adjusting to handle if res is the data itself or res.data
+        const data = res.data || res;
+        
         setForm({
           name: data.name || "",
           email: data.email || "",
@@ -56,7 +61,7 @@ export default function Profile() {
       .catch((e) => {
         const message = (e && (e.message || e.toString())) || "Failed to load profile";
         setErr(message);
-        // optional toast on load failure (you can remove if you prefer only save toasts)
+        // optional toast on load failure
         toast.error("❌ Failed to load profile");
       })
       .finally(() => setLoading(false));
@@ -82,12 +87,12 @@ export default function Profile() {
     setOk("");
 
     try {
-      // saveProfile is expected to send PUT /api/profile (your existing function)
-      const res = await saveProfile(form);
+      // FIX: Calling updateProfile instead of saveProfile
+      const response = await updateProfile(form);
+      const res = response.data || response;
 
       // handle common response shapes:
       // { success: true, message: "...", profile: {...} }
-      // or the API might return the profile directly
       if (res && res.success === false) {
         const m = res.message || "Update failed";
         throw new Error(m);
