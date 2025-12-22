@@ -1,5 +1,5 @@
 # ---------------------- #
-# app.py (Final V7 - Pure Manual CORS)
+# app.py (Final Universal Fix - Dual Routes)
 # ---------------------- #
 import os
 import json
@@ -8,8 +8,8 @@ from datetime import datetime, timedelta
 from functools import wraps
 import traceback 
 
-from flask import Flask, request, jsonify, make_response, send_from_directory
-# REMOVED flask_cors import to prevent conflicts
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS, cross_origin # Use the official library
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename 
@@ -56,20 +56,14 @@ if not os.path.exists(REPORTS_FILE):
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
 
-# --- MANUALLY ADD HEADERS TO EVERY RESPONSE ---
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*" 
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    return response
+# --- CORS SETUP (Allow Everything) ---
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # --- AUTH DECORATOR ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # Allow Preflight checks (OPTIONS) to pass
+        # Let Flask-CORS handle the OPTIONS check automatically
         if request.method == 'OPTIONS':
             return jsonify({"status": "ok"}), 200
 
@@ -91,20 +85,16 @@ def token_required(f):
 
 # --- Helpers ---
 def load_users(): 
-    try:
-        with open(USERS_FILE, "r") as f: return json.load(f)
+    try: with open(USERS_FILE, "r") as f: return json.load(f)
     except: return []
 def save_users(users): 
-    try:
-        with open(USERS_FILE, "w") as f: json.dump(users, f, indent=2)
+    try: with open(USERS_FILE, "w") as f: json.dump(users, f, indent=2)
     except: pass
 def load_reports(): 
-    try:
-        with open(REPORTS_FILE, "r") as f: return json.load(f)
+    try: with open(REPORTS_FILE, "r") as f: return json.load(f)
     except: return []
 def save_reports(reports):
-    try:
-        with open(REPORTS_FILE, "w") as f: json.dump(reports, f, indent=2)
+    try: with open(REPORTS_FILE, "w") as f: json.dump(reports, f, indent=2)
     except: pass
 def create_token(payload):
     payload["exp"] = datetime.utcnow() + timedelta(hours=JWT_EXP_HOURS)
@@ -125,11 +115,11 @@ def to_full_url(path):
 def serve_output_file(filename):
     return send_from_directory(OUTPUTS_BASE_FOLDER, filename)
 
-# --- ROUTES ---
+# --- ROUTES (Supporting BOTH /api and root paths) ---
 
-@app.route("/api/signup", methods=["POST", "OPTIONS"])
+@app.route("/signup", methods=["POST"])
+@app.route("/api/signup", methods=["POST"])
 def signup():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     data = request.get_json(silent=True) or {}
     email = data.get("email", "").lower()
     password = data.get("password")
@@ -148,9 +138,9 @@ def signup():
     token = create_token({"id": uid, "email": email, "name": name})
     return jsonify({"token": token, "user": {"id": uid, "name": name, "email": email}}), 201
 
-@app.route("/api/login", methods=["POST", "OPTIONS"])
+@app.route("/login", methods=["POST"])
+@app.route("/api/login", methods=["POST"])
 def login():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     data = request.get_json(silent=True) or {}
     email = data.get("email", "").lower()
     password = data.get("password")
@@ -162,10 +152,11 @@ def login():
         return jsonify({"token": token, "user": {"id": user["id"], "name": user["name"]}}), 200
     return jsonify({"error": "Invalid credentials"}), 401
 
-@app.route("/api/classify", methods=["POST", "OPTIONS"])
+# --- CLASSIFY ROUTE (Dual Path) ---
+@app.route("/classify", methods=["POST"])
+@app.route("/api/classify", methods=["POST"])
 @token_required
 def classify_route():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     if "file" not in request.files: return jsonify({"error": "No file"}), 400
     file = request.files["file"]
     
@@ -227,10 +218,10 @@ def classify_route():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/reports", methods=["GET", "OPTIONS"])
+@app.route("/reports", methods=["GET"])
+@app.route("/api/reports", methods=["GET"])
 @token_required
 def get_reports():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     user_id = request.user.get("id")
     reports = load_reports()
     my_reports = [r for r in reports if r.get("username") == user_id]
@@ -245,10 +236,10 @@ def get_reports():
         })
     return jsonify(final), 200
 
-@app.route("/api/profile", methods=["GET", "PUT", "OPTIONS"])
+@app.route("/profile", methods=["GET", "PUT"])
+@app.route("/api/profile", methods=["GET", "PUT"])
 @token_required
 def profile_route():
-    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     user_id = request.user.get("id")
     users = load_users()
     idx = next((i for i, u in enumerate(users) if u["id"] == user_id), -1)
