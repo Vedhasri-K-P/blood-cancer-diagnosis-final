@@ -1,11 +1,11 @@
 import axios from 'axios';
 
 // 1. Point to the Render Backend
+// This will work because the backend now accepts /api/classify AND /classify
 const API_URL = "https://smart-diagnostic-tool.onrender.com/api";
 
 export const api = axios.create({
   baseURL: API_URL,
-  // DO NOT set Content-Type here globally for JSON. Let Axios handle it.
 });
 
 // 2. Automatically attach the Token
@@ -24,6 +24,6 @@ export const getProfile = () => api.get('/profile');
 export const updateProfile = (data) => api.put('/profile', data);
 export const getReports = () => api.get('/reports');
 
-// --- THE FIX IS HERE ---
-// We do NOT manually set 'Content-Type'. We let Axios/Browser detect the FormData.
+// --- CRITICAL FIX: No manual 'Content-Type' header here ---
+// We allow axios to handle the multipart form data automatically.
 export const classifyImage = (formData) => api.post('/classify', formData);
