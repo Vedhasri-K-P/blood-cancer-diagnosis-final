@@ -1,7 +1,6 @@
 # ---------------------- #
-# app.py (Final V6 - Brute Force Headers)
+# app.py (Final V7 - Pure Manual CORS)
 # ---------------------- #
-
 import os
 import json
 import uuid
@@ -10,7 +9,7 @@ from functools import wraps
 import traceback 
 
 from flask import Flask, request, jsonify, make_response, send_from_directory
-from flask_cors import CORS
+# REMOVED flask_cors import to prevent conflicts
 import jwt
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename 
@@ -57,11 +56,7 @@ if not os.path.exists(REPORTS_FILE):
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
 
-# --- CORS SETUP ---
-CORS(app)
-
-# --- THE BRUTE FORCE FIX ---
-# This function manually adds headers to EVERY response to ensure the browser is happy.
+# --- MANUALLY ADD HEADERS TO EVERY RESPONSE ---
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*" 
@@ -70,19 +65,14 @@ def add_cors_headers(response):
     response.headers["Access-Control-Allow-Credentials"] = "true"
     return response
 
-# --- AUTH DECORATOR (Modified) ---
+# --- AUTH DECORATOR ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # 1. Handle Preflight (OPTIONS) manually and immediately
+        # Allow Preflight checks (OPTIONS) to pass
         if request.method == 'OPTIONS':
-            resp = make_response(jsonify({"status": "ok"}), 200)
-            resp.headers["Access-Control-Allow-Origin"] = "*"
-            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-            resp.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-            return resp
+            return jsonify({"status": "ok"}), 200
 
-        # 2. Check Token for other methods (POST, GET, etc.)
         auth_header = request.headers.get("Authorization", None)
         if not auth_header: 
             return jsonify({"error": "Authorization header required"}), 401
@@ -175,7 +165,7 @@ def login():
 @app.route("/api/classify", methods=["POST", "OPTIONS"])
 @token_required
 def classify_route():
-    # OPTIONS is handled by decorator now, but explicit check implies route allows it
+    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     if "file" not in request.files: return jsonify({"error": "No file"}), 400
     file = request.files["file"]
     
@@ -190,7 +180,7 @@ def classify_route():
         
         disease = res.get("class_name", "Unknown")
         conf = safe_float(res.get("confidence"))
-        if conf > 1: conf = conf  # assume already percentage
+        if conf > 1: conf = conf  
         else: conf = conf * 100
         
         # Stage & PDF
@@ -217,7 +207,6 @@ def classify_route():
         # Response
         final_pdf_rel = f"static/outputs/reports/{pdf_name}" if os.path.exists(pdf_path) else ""
         
-        # Save Report
         report_entry = {
             "id": report_id, "username": request.user.get("id"), "disease": disease,
             "confidence": conf, "stage": stage, "date": datetime.now().isoformat(),
@@ -241,11 +230,11 @@ def classify_route():
 @app.route("/api/reports", methods=["GET", "OPTIONS"])
 @token_required
 def get_reports():
+    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     user_id = request.user.get("id")
     reports = load_reports()
     my_reports = [r for r in reports if r.get("username") == user_id]
     
-    # Format for frontend
     final = []
     for r in my_reports:
         final.append({
@@ -259,6 +248,7 @@ def get_reports():
 @app.route("/api/profile", methods=["GET", "PUT", "OPTIONS"])
 @token_required
 def profile_route():
+    if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     user_id = request.user.get("id")
     users = load_users()
     idx = next((i for i, u in enumerate(users) if u["id"] == user_id), -1)
