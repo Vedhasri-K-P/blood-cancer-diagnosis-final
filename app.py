@@ -1,5 +1,5 @@
 # ---------------------- #
-# app.py (Final "One Shot" Fix - Dual Routes + Handshake Pass)
+# app.py (Final Version - Dual Routes + Memory Safe)
 # ---------------------- #
 import os
 import json
@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 import traceback 
+import gc # Garbage Collector
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS 
@@ -35,7 +36,7 @@ except ImportError:
 # --- Configuration ---
 JWT_SECRET = os.environ.get("JWT_SECRET", "supersecretdevkey")
 JWT_ALGORITHM = "HS256"
-JWT_EXP_HOURS = int(os.environ.get("JWT_EXP_HOURS", "24"))
+JWT_EXP_HOURS = 24
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
 REPORTS_FILE = os.path.join(BASE_DIR, "reports.json")
@@ -44,15 +45,14 @@ STATIC_FOLDER = os.path.join(BASE_DIR, "static")
 OUTPUTS_BASE_FOLDER = os.path.join(STATIC_FOLDER, "outputs") 
 REPORTS_OUTPUT_FOLDER = os.path.join(OUTPUTS_BASE_FOLDER, "reports")
 GRADCAM_FOLDER = os.path.join(OUTPUTS_BASE_FOLDER, "gradcam") 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(REPORTS_OUTPUT_FOLDER, exist_ok=True)
-os.makedirs(GRADCAM_FOLDER, exist_ok=True)
 
-# Initialize files if missing
-if not os.path.exists(USERS_FILE):
-    with open(USERS_FILE, "w") as f: json.dump([], f)
-if not os.path.exists(REPORTS_FILE):
-    with open(REPORTS_FILE, "w") as f: json.dump([], f)
+for folder in [UPLOAD_FOLDER, REPORTS_OUTPUT_FOLDER, GRADCAM_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
+
+# Initialize files
+for fpath in [USERS_FILE, REPORTS_FILE]:
+    if not os.path.exists(fpath):
+        with open(fpath, "w") as f: json.dump([], f)
 
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
@@ -60,23 +60,19 @@ app.static_folder = STATIC_FOLDER
 # --- CORS: ALLOW EVERYTHING ---
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- SECURITY GUARD (The Fix) ---
+# --- SECURITY GUARD ---
 def token_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        # 1. THE FIX: Let the "Handshake" (OPTIONS) pass without checking token
+        # Allow Preflight (Handshake) automatically
         if request.method == 'OPTIONS':
             return jsonify({"status": "ok"}), 200
 
-        # 2. Check Token for everything else
         auth_header = request.headers.get("Authorization", None)
         if not auth_header: 
             return jsonify({"error": "Authorization header required"}), 401
         try:
-            parts = auth_header.split()
-            if parts[0].lower() != "bearer" or len(parts) != 2: 
-                raise ValueError("Invalid header")
-            token = parts[1]
+            token = auth_header.split()[1]
             data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
             request.user = data 
         except: 
@@ -106,15 +102,10 @@ def to_full_url(path):
         return f"{host}/outputs/{fname}"
     return ""
 
-# --- FILE SERVING ---
-@app.route('/outputs/<path:filename>')
-def serve_output_file(filename):
-    return send_from_directory(OUTPUTS_BASE_FOLDER, filename)
+# --- ROUTES (Dual Path for Robustness) ---
 
-# --- ROUTES (Supporting BOTH /api and root paths) ---
-
-@app.route("/signup", methods=["POST", "OPTIONS"])
 @app.route("/api/signup", methods=["POST", "OPTIONS"])
+@app.route("/signup", methods=["POST", "OPTIONS"])
 def signup():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     data = request.get_json(silent=True) or {}
@@ -134,8 +125,8 @@ def signup():
     token = create_token({"id": uid, "email": email, "name": name})
     return jsonify({"token": token, "user": {"id": uid, "name": name, "email": email}}), 201
 
-@app.route("/login", methods=["POST", "OPTIONS"])
 @app.route("/api/login", methods=["POST", "OPTIONS"])
+@app.route("/login", methods=["POST", "OPTIONS"])
 def login():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
     data = request.get_json(silent=True) or {}
@@ -149,9 +140,8 @@ def login():
         return jsonify({"token": token, "user": {"id": user["id"], "name": user["name"]}}), 200
     return jsonify({"error": "Invalid credentials"}), 401
 
-# --- CLASSIFY ROUTE (Dual Path + OPTIONS Support) ---
-@app.route("/classify", methods=["POST", "OPTIONS"])
 @app.route("/api/classify", methods=["POST", "OPTIONS"])
+@app.route("/classify", methods=["POST", "OPTIONS"])
 @token_required
 def classify_route():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
@@ -163,6 +153,9 @@ def classify_route():
     file.save(save_path)
     
     try:
+        # Force garbage collection before heavy task
+        gc.collect()
+        
         # Prediction
         res = predict_disease(save_path)
         if res.get("invalid"): return jsonify({"error": "Invalid Image"}), 400
@@ -171,7 +164,6 @@ def classify_route():
         conf = float(res.get("confidence", 0))
         if conf <= 1: conf = conf * 100
         
-        # Stage & PDF
         stage = "N/A"
         if disease == "ALL":
              stage = predict_stage(save_path).get("stage", "Unknown")
@@ -203,6 +195,9 @@ def classify_route():
         reports.append(report_entry)
         save_json(REPORTS_FILE, reports)
         
+        # Force garbage collection after heavy task to free RAM
+        gc.collect()
+        
         return jsonify({
             "prediction": disease, "confidence": conf, "stage": stage,
             "explanation": res.get("explanation"),
@@ -214,8 +209,8 @@ def classify_route():
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route("/reports", methods=["GET", "OPTIONS"])
 @app.route("/api/reports", methods=["GET", "OPTIONS"])
+@app.route("/reports", methods=["GET", "OPTIONS"])
 @token_required
 def get_reports():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
@@ -233,8 +228,8 @@ def get_reports():
         })
     return jsonify(final), 200
 
-@app.route("/profile", methods=["GET", "PUT", "OPTIONS"])
 @app.route("/api/profile", methods=["GET", "PUT", "OPTIONS"])
+@app.route("/profile", methods=["GET", "PUT", "OPTIONS"])
 @token_required
 def profile_route():
     if request.method == "OPTIONS": return jsonify({"status": "ok"}), 200
@@ -252,7 +247,7 @@ def profile_route():
         data = request.get_json(silent=True) or {}
         for k in ["name", "hospital", "specialization", "phone", "location", "about"]:
             if k in data: users[idx][k] = data[k]
-        save_json(USERS_FILE, users)
+        save_users(users)
         return jsonify({"success": True}), 200
 
 if __name__ == "__main__":
