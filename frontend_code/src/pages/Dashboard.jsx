@@ -1,16 +1,15 @@
-import React, { useState, useEffect } from "react"; // Added useEffect
-import axios from "axios";
-import { FaFileUpload, FaSpinner } from "react-icons/fa"; // Added FaSpinner
+import React, { useState, useEffect } from "react";
+import { FaFileUpload, FaSpinner } from "react-icons/fa";
 import Sidebar from "../components/Sidebar";
-import { toast, ToastContainer } from 'react-toastify'; // Import toast
-import 'react-toastify/dist/ReactToastify.css'; // Import toast CSS
+import { toast, ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
-// Helper to get token (adjust based on where you store it)
-const getToken = () => localStorage.getItem("token"); 
+// --- FIX: Import the API function instead of using axios directly ---
+import { classifyImage } from "../services/api";
 
 const Dashboard = () => {
   const [selectedFile, setSelectedFile] = useState(null);
-  const [previewURL, setPreviewURL] = useState(null); // For image preview
+  const [previewURL, setPreviewURL] = useState(null);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -19,9 +18,8 @@ const Dashboard = () => {
     const file = e.target.files[0];
     if (file) {
       setSelectedFile(file);
-      setResult(null); // Clear previous results
+      setResult(null);
       setError("");
-      // Create a preview URL
       const reader = new FileReader();
       reader.onloadend = () => {
         setPreviewURL(reader.result);
@@ -35,8 +33,9 @@ const Dashboard = () => {
 
   const handleUpload = async () => {
     if (!selectedFile) {
-      setError("Please select an image file to upload.");
-      toast.error("Please select an image file to upload."); // Toast notification
+      const msg = "Please select an image file to upload.";
+      setError(msg);
+      toast.error(msg);
       return;
     }
 
@@ -45,90 +44,64 @@ const Dashboard = () => {
 
     try {
       setLoading(true);
-      setResult(null); // Clear previous result during loading
+      setResult(null);
       setError("");
 
-      const token = getToken(); // Get auth token
-      if (!token) {
-           setError("Authentication error. Please log in again.");
-           toast.error("Authentication error. Please log in again.");
-           setLoading(false);
-           // Optional: Redirect to login page
-           // navigate('/login'); 
-           return;
-      }
+      // --- FIX: Use classifyImage from api.js ---
+      // This automatically uses the correct Render URL and attaches the Token.
+      const response = await classifyImage(formData);
+      
+      // Axios returns the data inside 'data' property
+      const data = response.data;
 
-      // Send request to backend with Authorization header
-      const res = await axios.post("http://localhost:5000/api/classify", formData, {
-        headers: { 
-          "Content-Type": "multipart/form-data",
-          "Authorization": `Bearer ${token}` // Add JWT token
-        },
-      });
-
-      // Backend should send a specific error structure on invalid image
-      if (res.data.error && res.data.error === "INVALID_IMAGE") {
-        console.error("Backend validation error:", res.data.message);
-        setError(`Upload failed: ${res.data.message || 'Invalid image file.'}`);
-        toast.error(`Upload failed: ${res.data.message || 'Invalid image file.'}`);
-        setResult(null);
-        setLoading(false); // Make sure loading stops
-        return; 
+      if (data.error && data.error === "INVALID_IMAGE") {
+        console.error("Backend validation error:", data.message);
+        const msg = `Upload failed: ${data.message || 'Invalid image file.'}`;
+        setError(msg);
+        toast.error(msg);
+        return;
       }
       
-      // --- FIX: Check for the correct top-level keys ---
-      if (res.data && res.data.prediction) {
-        // Log the received data for debugging
-        console.log("Received data from backend:", res.data); 
-        
-        // --- FIX: Set the entire response data to the result state ---
-        setResult(res.data); 
-        toast.success("Prediction successful!"); // Success notification
+      if (data && data.prediction) {
+        console.log("Received data from backend:", data); 
+        setResult(data); 
+        toast.success("Prediction successful!");
       } else {
-         // Handle unexpected successful response format
-         console.error("Unexpected response format:", res.data);
+         console.error("Unexpected response format:", data);
          setError("Received an unexpected response from the server.");
          toast.error("Received an unexpected response from the server.");
-         setResult(null);
       }
 
     } catch (err) {
       console.error("Upload error details:", err);
-      // More specific error handling
       let errorMessage = "Prediction failed. Please try again.";
+      
       if (err.response) {
-         // The request was made and the server responded with a status code
-         // that falls out of the range of 2xx
          console.error("Backend Error Response:", err.response.data);
          if (err.response.data && err.response.data.error === "INVALID_IMAGE") {
-              errorMessage = `Upload failed: ${err.response.data.message || 'Invalid image file.'}`;
+             errorMessage = `Upload failed: ${err.response.data.message || 'Invalid image file.'}`;
          } else if (err.response.data && err.response.data.error) {
-              errorMessage = `Error: ${err.response.data.error}`; // Show specific backend error
-              if (err.response.status === 401) { // Handle token expiration
-                   errorMessage = "Your session expired. Please log in again.";
-                   // Optional: Add logout logic here
-              }
+             errorMessage = `Error: ${err.response.data.error}`;
+             if (err.response.status === 401) {
+                  errorMessage = "Your session expired. Please log in again.";
+             }
          } else if (err.response.status) {
              errorMessage = `Server Error: ${err.response.status}`;
          }
       } else if (err.request) {
-         // The request was made but no response was received
          console.error("No response received:", err.request);
          errorMessage = "Network error: Could not connect to the server.";
       } else {
-         // Something happened in setting up the request that triggered an Error
          console.error("Request setup error:", err.message);
          errorMessage = `Client error: ${err.message}`;
       }
       setError(errorMessage);
-      toast.error(errorMessage); // Show error toast
-      setResult(null); // Clear result on error
+      toast.error(errorMessage);
     } finally {
-      setLoading(false); // Ensure loading is always turned off
+      setLoading(false);
     }
   };
   
-  // Clear result when file selection is cleared
   useEffect(() => {
      if (!selectedFile) {
        setPreviewURL(null);
@@ -157,7 +130,7 @@ const Dashboard = () => {
                 </div>
              )}
              
-            {/* File Input - Styled */}
+            {/* File Input */}
             <label htmlFor="file-upload" className="cursor-pointer bg-white text-blue-600 px-4 py-2 rounded-full border border-blue-300 hover:bg-blue-50 text-sm font-medium">
                 {selectedFile ? `Selected: ${selectedFile.name}` : "Choose Image File"}
             </label>
@@ -165,13 +138,13 @@ const Dashboard = () => {
                id="file-upload"
                type="file"
                onChange={handleFileChange}
-               className="hidden" // Hide default input
-               accept="image/jpeg, image/png, image/jpg" // Be specific about accepted types
+               className="hidden"
+               accept="image/jpeg, image/png, image/jpg"
              />
              
             <button
               onClick={handleUpload}
-              disabled={loading || !selectedFile} // Disable button when loading or no file
+              disabled={loading || !selectedFile}
               className={`bg-blue-600 text-white px-6 py-2.5 rounded-full shadow-md hover:bg-blue-700 flex items-center gap-2 transition duration-150 ease-in-out ${loading || !selectedFile ? 'opacity-50 cursor-not-allowed' : ''}`}
             >
               {loading ? (
@@ -181,29 +154,20 @@ const Dashboard = () => {
               )}
             </button>
             {/* Error Message Area */}
-            {error && !loading && ( // Only show error if not loading
+            {error && !loading && (
               <p className="text-red-600 mt-3 font-semibold text-center text-sm bg-red-100 p-2 rounded-md">
                 ⚠️ {error}
               </p>
             )}
           </div>
 
-          {/* Loading Indicator (alternative position) */}
-          {/* {loading && (
-            <div className="flex justify-center items-center mt-6">
-              <FaSpinner className="animate-spin text-blue-600 text-3xl" />
-              <p className="ml-3 text-blue-700">Processing image, please wait...</p>
-            </div>
-          )} */}
-
-          {/* Prediction result - Improved Layout */}
-          {result && !loading && ( // Only show result if not loading and result exists
+          {/* Prediction result */}
+          {result && !loading && (
             <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 mt-6 border border-blue-200 shadow-md space-y-4">
               <h2 className="text-2xl font-semibold text-blue-800 border-b pb-2 mb-4">
                 🧬 Prediction Result
               </h2>
 
-              {/* Use grid for better alignment */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3 text-gray-800">
                   <p><strong>Disease:</strong></p> 
                   <p className="font-medium text-blue-900">{result.prediction}</p>
@@ -222,24 +186,24 @@ const Dashboard = () => {
                     </p>
                </div>
 
-              {/* --- FIX: Grad-CAM visualization using result.gradcam_url --- */}
-              {result.gradcam_url && ( // Check if the URL exists directly on result
+              {/* Grad-CAM visualization */}
+              {result.gradcam_url && (
                 <div className="mt-5 pt-4 border-t">
                    <h3 className="font-semibold text-gray-700 mb-2">Grad-CAM Visualization</h3>
                   <img
-                    src={result.gradcam_url} // Use the correct key
+                    src={result.gradcam_url}
                     alt="Grad-CAM Heatmap"
-                    className="rounded-xl border border-gray-300 max-w-xs mx-auto shadow-sm" // Center and limit size
+                    className="rounded-xl border border-gray-300 max-w-xs mx-auto shadow-sm"
                   />
                   <p className="text-xs text-gray-500 text-center mt-1">Heatmap highlighting areas influencing the prediction.</p>
                 </div>
               )}
 
-              {/* --- FIX: PDF report link using result.pdf_url --- */}
-              {result.pdf_url && ( // Check if the URL exists directly on result
+              {/* PDF report link */}
+              {result.pdf_url && (
                 <div className="mt-4 text-center">
                   <a
-                    href={result.pdf_url} // Use the correct key
+                    href={result.pdf_url}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-block bg-green-600 text-white px-5 py-2 rounded-full shadow hover:bg-green-700 text-sm font-medium transition duration-150"

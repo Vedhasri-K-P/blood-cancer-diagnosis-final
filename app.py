@@ -1,5 +1,5 @@
 # ---------------------- #
-# app.py (Final Version - Dual Routes + Memory Safe)
+# app.py (Final "Self-Healing" V8)
 # ---------------------- #
 import os
 import json
@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 import traceback 
-import gc # Garbage Collector
+import gc
 
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS 
@@ -22,12 +22,10 @@ try:
 except ImportError:
     HAS_PDF_GEN = False
     def generate_pdf(*args, **kwargs): pass 
-    
 try:
     from classify import predict_disease
 except ImportError:
     def predict_disease(path): return {"invalid": True, "detail": "Classifier not available."}
-
 try:
     from stage_predictor import predict_stage
 except ImportError:
@@ -56,43 +54,23 @@ for fpath in [USERS_FILE, REPORTS_FILE]:
 
 app = Flask(__name__)
 app.static_folder = STATIC_FOLDER 
-
-# --- CORS: ALLOW EVERYTHING ---
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# --- SECURITY GUARD ---
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        # Allow Preflight (Handshake) automatically
-        if request.method == 'OPTIONS':
-            return jsonify({"status": "ok"}), 200
-
-        auth_header = request.headers.get("Authorization", None)
-        if not auth_header: 
-            return jsonify({"error": "Authorization header required"}), 401
-        try:
-            token = auth_header.split()[1]
-            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-            request.user = data 
-        except: 
-            return jsonify({"error": "Invalid token"}), 401
-        
-        return f(*args, **kwargs)
-    return decorated
-
-# --- Helpers ---
+# --- HELPER FUNCTIONS ---
 def load_json(filepath):
     try:
         with open(filepath, "r") as f: return json.load(f)
     except: return []
+
 def save_json(filepath, data):
     try:
         with open(filepath, "w") as f: json.dump(data, f, indent=2)
     except: pass
+
 def create_token(payload):
     payload["exp"] = datetime.utcnow() + timedelta(hours=JWT_EXP_HOURS)
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
 def to_full_url(path):
     if not path: return ""
     clean = path.replace("\\", "/").strip("/")
@@ -102,7 +80,44 @@ def to_full_url(path):
         return f"{host}/outputs/{fname}"
     return ""
 
-# --- ROUTES (Dual Path for Robustness) ---
+# --- SECURITY GUARD (Self-Healing) ---
+def token_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if request.method == 'OPTIONS':
+            return jsonify({"status": "ok"}), 200
+
+        auth_header = request.headers.get("Authorization", None)
+        if not auth_header: return jsonify({"error": "No token"}), 401
+        
+        try:
+            token = auth_header.split()[1]
+            data = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+            request.user = data
+            
+            # --- SELF HEALING MAGIC ---
+            # If server wiped users.json, recreate this user so we don't crash
+            users = load_json(USERS_FILE)
+            user_exists = any(u["id"] == data["id"] for u in users)
+            if not user_exists:
+                # Recreate the missing user on the fly
+                users.append({
+                    "id": data["id"],
+                    "email": data.get("email"),
+                    "name": data.get("name", "Restored User"),
+                    "password_hash": "", # Can't restore password, but keeps them logged in
+                    "is_admin": False
+                })
+                save_json(USERS_FILE, users)
+            # ---------------------------
+            
+        except: 
+            return jsonify({"error": "Invalid token"}), 401
+        
+        return f(*args, **kwargs)
+    return decorated
+
+# --- ROUTES ---
 
 @app.route("/api/signup", methods=["POST", "OPTIONS"])
 @app.route("/signup", methods=["POST", "OPTIONS"])
@@ -153,10 +168,7 @@ def classify_route():
     file.save(save_path)
     
     try:
-        # Force garbage collection before heavy task
-        gc.collect()
-        
-        # Prediction
+        gc.collect() # Free RAM
         res = predict_disease(save_path)
         if res.get("invalid"): return jsonify({"error": "Invalid Image"}), 400
         
@@ -170,21 +182,24 @@ def classify_route():
              
         report_id = uuid.uuid4().hex
         pdf_name = f"report_{report_id}.pdf"
-        pdf_path = os.path.join(REPORTS_OUTPUT_FOLDER, pdf_name)
         
-        gradcam_rel = res.get("gradcam_url", "")
-        # Fix gradcam path logic
-        gradcam_abs = ""
-        if gradcam_rel:
-            clean_gc = gradcam_rel.replace("\\", "/").split("gradcam/")[-1]
-            gradcam_abs = os.path.join(GRADCAM_FOLDER, clean_gc)
-            gradcam_rel = f"static/outputs/gradcam/{clean_gc}"
-
-        if HAS_PDF_GEN:
-            try: generate_pdf(pdf_path, request.user.get("name"), disease, conf, stage, res.get("explanation"), gradcam_abs)
-            except: pass
+        # Safe PDF generation
+        try:
+            pdf_path = os.path.join(REPORTS_OUTPUT_FOLDER, pdf_name)
+            gradcam_rel = res.get("gradcam_url", "")
+            gradcam_abs = ""
+            if gradcam_rel:
+                clean_gc = gradcam_rel.replace("\\", "/").split("gradcam/")[-1]
+                gradcam_abs = os.path.join(GRADCAM_FOLDER, clean_gc)
+                gradcam_rel = f"static/outputs/gradcam/{clean_gc}"
             
-        final_pdf_rel = f"static/outputs/reports/{pdf_name}" if os.path.exists(pdf_path) else ""
+            if HAS_PDF_GEN:
+                generate_pdf(pdf_path, request.user.get("name"), disease, conf, stage, res.get("explanation"), gradcam_abs)
+        except: 
+            pdf_name = ""
+            gradcam_rel = ""
+
+        final_pdf_rel = f"static/outputs/reports/{pdf_name}" if pdf_name else ""
         
         report_entry = {
             "id": report_id, "username": request.user.get("id"), "disease": disease,
@@ -194,9 +209,7 @@ def classify_route():
         reports = load_json(REPORTS_FILE)
         reports.append(report_entry)
         save_json(REPORTS_FILE, reports)
-        
-        # Force garbage collection after heavy task to free RAM
-        gc.collect()
+        gc.collect() # Free RAM
         
         return jsonify({
             "prediction": disease, "confidence": conf, "stage": stage,
@@ -247,7 +260,7 @@ def profile_route():
         data = request.get_json(silent=True) or {}
         for k in ["name", "hospital", "specialization", "phone", "location", "about"]:
             if k in data: users[idx][k] = data[k]
-        save_users(users)
+        save_json(USERS_FILE, users)
         return jsonify({"success": True}), 200
 
 if __name__ == "__main__":
