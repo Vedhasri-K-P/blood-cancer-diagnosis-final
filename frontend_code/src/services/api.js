@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // 1. Point to the Render Backend
 // This will work because the backend now accepts /api/classify AND /classify
-const API_URL = "https://smart-diagnostic-tool.onrender.com/api";
+const API_URL = "https://ahmed-geothermal-danelle.ngrok-free.dev -> http://localhost:5000/api";
 
 export const api = axios.create({
   baseURL: API_URL,
